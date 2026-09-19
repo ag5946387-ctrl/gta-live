@@ -83,24 +83,29 @@
     <div class="footer">ID de dispositivo: <span id="devId">—</span></div>
   </div>
 
-<script>
+<script type="module">
   // ======================= CONFIGURA ESTO =======================
-  // Canal público de ntfy.sh (gratis, sin cuenta). Cámbialo por algo
-  // propio y difícil de adivinar si te preocupa la privacidad — debe
-  // ser IDÉNTICO en tracker.html y overlay.html.
-  const TOPIC_BASE = "gta-live-lt85e9u5sg";
-  // ID de este dispositivo/persona. Cambia esto si vas a rastrear a
-  // más de una persona (cada una con su propio link con ?id=xxxx)
+  // Pega aquí la config de tu proyecto de Firebase (Configuración del
+  // proyecto > Tus apps > SDK config). Gratis, sin tarjeta.
+  const firebaseConfig = {
+    apiKey: "TU_API_KEY",
+    authDomain: "TU_PROYECTO.firebaseapp.com",
+    databaseURL: "https://TU_PROYECTO-default-rtdb.firebaseio.com",
+    projectId: "TU_PROYECTO",
+  };
   const params = new URLSearchParams(location.search);
   const DEVICE_ID = params.get("id") || "principal";
-  const TOPIC = TOPIC_BASE + "-" + DEVICE_ID;
   // ================================================================
 
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js";
+  import { getDatabase, ref, set } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-database.js";
+
+  const app = initializeApp(firebaseConfig);
+  const db = getDatabase(app);
+  const locRef = ref(db, "locations/" + DEVICE_ID);
+
   function publishLocation(data){
-    fetch("https://ntfy.sh/" + TOPIC, {
-      method: "POST",
-      body: JSON.stringify(data),
-    }).catch(()=>{ /* si falla un envío, el siguiente lo corrige */ });
+    set(locRef, data).catch(()=>{ /* si falla un envío, el siguiente lo corrige */ });
   }
 
   document.getElementById("devId").textContent = DEVICE_ID;
