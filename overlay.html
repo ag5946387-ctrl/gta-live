@@ -37,9 +37,13 @@
     width:200%; height:200%;
     left:-50%; top:-50%;
     transform-origin:50% 50%;
-    transition:transform .25s linear;
   }
   #map{ width:100%; height:100%; }
+  /* tiles libres de OpenStreetMap vienen claros; los oscurecemos por CSS
+     para el look GTA sin depender de un proveedor con API key */
+  #map .leaflet-tile-pane{
+    filter: invert(1) hue-rotate(180deg) brightness(0.85) contrast(1.05) saturate(0.6);
+  }
   .leaflet-control-attribution{
     font-size:8px !important;
     background:rgba(0,0,0,.4) !important;
@@ -61,7 +65,6 @@
     position:absolute; inset:5px;
     border-radius:50%;
     transform-origin:50% 50%;
-    transition:transform .25s linear;
     pointer-events:none;
     z-index:18;
   }
@@ -139,9 +142,10 @@
     boxZoom:false, keyboard:false, touchZoom:false, tap:false,
   }).setView([4.142, -73.626], 17); // Villavicencio por defecto hasta recibir GPS real
 
-  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-    maxZoom: 20,
-    attribution: '&copy; OpenStreetMap &copy; CARTO',
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    subdomains: "abc",
+    attribution: '&copy; OpenStreetMap contributors',
   }).addTo(map);
 
   const trail = L.polyline([], { color:"#ff2d55", weight:3, opacity:.7 }).addTo(map);
@@ -176,28 +180,78 @@
   }
   setInterval(updateStaleness, 3000);
 
+  // ---- Interpolación suave entre fixes de GPS ----
+  // En vez de saltar de golpe cada vez que llega una posición nueva,
+  // animamos continuamente desde la última posición conocida hacia la
+  // nueva, durante el mismo intervalo de tiempo que tardó en llegar.
+  let animFrom = null;      // {lat,lng,heading}
+  let animTo = null;        // {lat,lng,heading}
+  let animStart = 0;
+  let animDuration = 1000;  // ms, se ajusta según el intervalo real entre fixes
+  let lastFixTime = 0;
+  let rafId = null;
+
+  function shortestAngleDelta(a, b){
+    let d = (b - a) % 360;
+    if (d > 180) d -= 360;
+    if (d < -180) d += 360;
+    return d;
+  }
+
+  function applyFrame(lat, lng, heading){
+    map.setView([lat, lng], map.getZoom(), { animate:false });
+    mapRotor.style.transform = `rotate(${-heading}deg)`;
+    compassLayer.style.transform = `rotate(${-heading}deg)`;
+    ["N","E","S","O"].forEach(dir => {
+      ticks[dir].style.transform = `rotate(${heading}deg)`;
+    });
+  }
+
+  function tick(now){
+    if (!animFrom || !animTo) return;
+    const t = Math.min(1, (now - animStart) / animDuration);
+    const ease = t; // lineal: el GPS ya viene "atrasado", no hace falta easing extra
+    const lat = animFrom.lat + (animTo.lat - animFrom.lat) * ease;
+    const lng = animFrom.lng + (animTo.lng - animFrom.lng) * ease;
+    const heading = animFrom.heading + shortestAngleDelta(animFrom.heading, animTo.heading) * ease;
+    applyFrame(lat, lng, heading);
+    if (t < 1) {
+      rafId = requestAnimationFrame(tick);
+    } else {
+      rafId = null;
+    }
+  }
+
   function handleUpdate(d){
     if (!d || !d.lat) return;
     lastTs = d.ts || Date.now();
 
-    const latlng = [d.lat, d.lng];
-    map.setView(latlng, map.getZoom(), { animate:true });
+    const now = performance.now();
+    const rawInterval = lastFixTime ? (Date.now() - lastFixTime) : 1000;
+    // clamp: nunca animamos por menos de 300ms ni más de 4s, así un GPS
+    // lento no se siente "congelado" y uno rápido no se ve tembloroso
+    animDuration = Math.max(300, Math.min(4000, rawInterval));
+    lastFixTime = Date.now();
 
-    if (firstFix) { map.setZoom(18); firstFix = false; }
+    const currentLat = animTo ? animTo.lat : d.lat;
+    const currentLng = animTo ? animTo.lng : d.lng;
+    const currentHeading = animTo ? animTo.heading : (d.heading || 0);
 
-    trailPoints.push(latlng);
+    animFrom = { lat: currentLat, lng: currentLng, heading: currentHeading };
+    animTo = { lat: d.lat, lng: d.lng, heading: d.heading || 0 };
+    animStart = now;
+
+    if (firstFix) {
+      map.setZoom(18);
+      applyFrame(d.lat, d.lng, d.heading || 0);
+      firstFix = false;
+    }
+
+    trailPoints.push([d.lat, d.lng]);
     if (trailPoints.length > MAX_TRAIL) trailPoints.shift();
     trail.setLatLngs(trailPoints);
 
-    const heading = d.heading || 0;
-    // Map + compass rotate opposite of heading; player arrow stays fixed pointing up
-    mapRotor.style.transform = `rotate(${-heading}deg)`;
-    compassLayer.style.transform = `rotate(${-heading}deg)`;
-
-    // keep letters upright
-    ["N","E","S","O"].forEach(dir => {
-      ticks[dir].style.transform = `rotate(${heading}deg)`;
-    });
+    if (rafId === null) rafId = requestAnimationFrame(tick);
 
     const kmh = d.speed ? (d.speed * 3.6).toFixed(0) : 0;
     hud.textContent = kmh + " km/h";
