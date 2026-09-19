@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Rastreo en vivo</title>
+<style>
+  :root{
+    --bg:#0b0b0f;
+    --panel:#15151d;
+    --accent:#5ee1c8;
+    --accent2:#ff5470;
+    --text:#eef0f2;
+    --muted:#8a8d98;
+  }
+  *{box-sizing:border-box;}
+  html,body{
+    margin:0; height:100%;
+    background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    display:flex; align-items:center; justify-content:center;
+    padding:24px;
+  }
+  .card{
+    width:100%; max-width:420px;
+    background:var(--panel);
+    border-radius:20px;
+    padding:32px 24px;
+    text-align:center;
+    box-shadow:0 20px 60px rgba(0,0,0,.5);
+    border:1px solid rgba(255,255,255,.06);
+  }
+  h1{
+    font-size:20px; margin:0 0 4px;
+    letter-spacing:.2px;
+  }
+  p.sub{
+    color:var(--muted); font-size:14px; margin:0 0 28px;
+  }
+  .dot{
+    width:14px; height:14px; border-radius:50%;
+    display:inline-block; margin-right:8px;
+    background:var(--muted);
+  }
+  .dot.live{ background:var(--accent); box-shadow:0 0 0 0 rgba(94,225,200,.6); animation:pulse 1.6s infinite; }
+  @keyframes pulse{
+    0%{box-shadow:0 0 0 0 rgba(94,225,200,.5);}
+    70%{box-shadow:0 0 0 14px rgba(94,225,200,0);}
+    100%{box-shadow:0 0 0 0 rgba(94,225,200,0);}
+  }
+  .status{
+    font-size:14px; color:var(--muted);
+    margin-bottom:24px; min-height:20px;
+  }
+  button{
+    width:100%; padding:16px; border-radius:14px; border:none;
+    font-size:16px; font-weight:600; cursor:pointer;
+    background:var(--accent); color:#04211c;
+    transition:transform .1s ease;
+  }
+  button:active{ transform:scale(.98); }
+  button.stop{ background:var(--accent2); color:#2a0410; }
+  .meta{
+    margin-top:20px; font-size:12px; color:var(--muted);
+    display:flex; justify-content:space-between;
+  }
+  .meta b{ color:var(--text); font-weight:600; }
+  .footer{
+    margin-top:24px; font-size:11px; color:var(--muted); opacity:.6;
+  }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1><span id="dot" class="dot"></span>Rastreo en vivo</h1>
+    <p class="sub">Tu ubicación se comparte solo mientras esta página esté abierta.</p>
+    <div class="status" id="status">Sin iniciar</div>
+    <button id="toggleBtn">Activar rastreo</button>
+    <div class="meta">
+      <span>Precisión: <b id="acc">—</b></span>
+      <span>Velocidad: <b id="spd">—</b></span>
+    </div>
+    <div class="footer">ID de dispositivo: <span id="devId">—</span></div>
+  </div>
+
+<script>
+  // ======================= CONFIGURA ESTO =======================
+  // Canal público de ntfy.sh (gratis, sin cuenta). Cámbialo por algo
+  // propio y difícil de adivinar si te preocupa la privacidad — debe
+  // ser IDÉNTICO en tracker.html y overlay.html.
+  const TOPIC_BASE = "gta-live-lt85e9u5sg";
+  // ID de este dispositivo/persona. Cambia esto si vas a rastrear a
+  // más de una persona (cada una con su propio link con ?id=xxxx)
+  const params = new URLSearchParams(location.search);
+  const DEVICE_ID = params.get("id") || "principal";
+  const TOPIC = TOPIC_BASE + "-" + DEVICE_ID;
+  // ================================================================
+
+  function publishLocation(data){
+    fetch("https://ntfy.sh/" + TOPIC, {
+      method: "POST",
+      body: JSON.stringify(data),
+    }).catch(()=>{ /* si falla un envío, el siguiente lo corrige */ });
+  }
+
+  document.getElementById("devId").textContent = DEVICE_ID;
+
+  const statusEl = document.getElementById("status");
+  const dotEl = document.getElementById("dot");
+  const btn = document.getElementById("toggleBtn");
+  const accEl = document.getElementById("acc");
+  const spdEl = document.getElementById("spd");
+
+  let watchId = null;
+  let lastHeadingFromGps = null;
+
+  function setLive(on){
+    dotEl.classList.toggle("live", on);
+    btn.textContent = on ? "Detener rastreo" : "Activar rastreo";
+    btn.classList.toggle("stop", on);
+  }
+
+  function handlePosition(pos){
+    const { latitude, longitude, heading, speed, accuracy } = pos.coords;
+    if (heading !== null && !Number.isNaN(heading)) lastHeadingFromGps = heading;
+
+    publishLocation({
+      lat: latitude,
+      lng: longitude,
+      heading: lastHeadingFromGps ?? 0,
+      speed: speed || 0,
+      accuracy: accuracy || 0,
+      ts: Date.now(),
+    });
+
+    accEl.textContent = Math.round(accuracy) + " m";
+    spdEl.textContent = speed ? (speed * 3.6).toFixed(1) + " km/h" : "0 km/h";
+    statusEl.textContent = "Transmitiendo ubicación…";
+  }
+
+  function handleError(err){
+    statusEl.textContent = "Error: " + err.message;
+    setLive(false);
+  }
+
+  btn.addEventListener("click", () => {
+    if (watchId === null) {
+      if (!("geolocation" in navigator)) {
+        statusEl.textContent = "Este navegador no soporta geolocalización.";
+        return;
+      }
+      statusEl.textContent = "Solicitando permiso de ubicación…";
+
+      // En iOS, la orientación necesita permiso aparte (solo si el usuario interactúa)
+      if (typeof DeviceOrientationEvent !== "undefined" &&
+          typeof DeviceOrientationEvent.requestPermission === "function") {
+        DeviceOrientationEvent.requestPermission().then(state => {
+          if (state === "granted") {
+            window.addEventListener("deviceorientationabsolute", onOrientation);
+            window.addEventListener("deviceorientation", onOrientation);
+          }
+        }).catch(()=>{});
+      } else {
+        window.addEventListener("deviceorientationabsolute", onOrientation);
+        window.addEventListener("deviceorientation", onOrientation);
+      }
+
+      watchId = navigator.geolocation.watchPosition(handlePosition, handleError, {
+        enableHighAccuracy: true,
+        maximumAge: 0,
+        timeout: 15000,
+      });
+
+      setLive(true);
+    } else {
+      navigator.geolocation.clearWatch(watchId);
+      watchId = null;
+      setLive(false);
+      statusEl.textContent = "Rastreo detenido.";
+    }
+  });
+
+  function onOrientation(e){
+    const heading = e.webkitCompassHeading ?? (e.alpha !== null ? (360 - e.alpha) : null);
+    if (heading !== null && !Number.isNaN(heading)) lastHeadingFromGps = heading;
+  }
+
+  // Evita que la pantalla se apague mientras se transmite (si el navegador lo soporta)
+  if ("wakeLock" in navigator) {
+    let wakeLock = null;
+    document.addEventListener("visibilitychange", async () => {
+      if (document.visibilityState === "visible" && watchId !== null) {
+        try { wakeLock = await navigator.wakeLock.request("screen"); } catch(e){}
+      }
+    });
+    btn.addEventListener("click", async () => {
+      if (watchId !== null) {
+        try { wakeLock = await navigator.wakeLock.request("screen"); } catch(e){}
+      }
+    });
+  }
+</script>
+</body>
+</html>
